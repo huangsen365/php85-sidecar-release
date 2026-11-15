@@ -1,0 +1,12 @@
+#!/bin/sh
+# Composer for the sites on this 8.5 sidecar, run as sshuser (the owner of the site dirs), e.g.:
+#   docker exec -it -u sshuser -w /var/www/<site> php85-sidecar composer install --no-dev
+# CLI only. conf/99-sidecar.ini disables proc_open, popen, putenv and more for every pool and also for the CLI;
+# composer needs them, so this one php process starts with an empty list. The pools keep theirs.
+# Packages come as dist zips (the image has no git) through the Tencent mirror set in
+# /opt/sidecar/composer-home/config.json (Aliyun's composer mirror stopped updating before Laravel 13, 2026-11).
+# The rootfs is read-only; to use another mirror for one run, point COMPOSER_HOME at a dir in /tmp with a config.json.
+# The cache is in /tmp (tmpfs), so it is empty after a restart.
+export COMPOSER_HOME="${COMPOSER_HOME:-/opt/sidecar/composer-home}"
+export COMPOSER_CACHE_DIR="${COMPOSER_CACHE_DIR:-/tmp/composer-cache}"
+exec /opt/remi/php85/root/usr/bin/php -d disable_functions= -d memory_limit=-1 /opt/sidecar/composer.phar "$@"

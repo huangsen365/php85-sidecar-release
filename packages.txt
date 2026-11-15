@@ -1,0 +1,46 @@
+# Mirrors the php74 extensions on web001 (baseline/php74-modules.txt).
+# Not installed: apc, propro (gone in PHP 8), oci8 / PDO_OCI (need Oracle Instant Client; add when a site uses Oracle).
+# Bundled in php85-php-common/cli: bz2 calendar ctype curl exif fileinfo filter ftp gettext iconv json
+# openssl opcache pcntl phar readline session sockets tokenizer zlib.
+fcgi
+php85-php-fpm
+php85-php-cli
+php85-php-bcmath
+php85-php-dba
+php85-php-enchant
+php85-php-gd
+php85-php-gmp
+php85-php-intl
+php85-php-ldap
+php85-php-mbstring
+php85-php-mysqlnd
+php85-php-odbc
+php85-php-pdo
+php85-php-process
+php85-php-sodium
+php85-php-tidy
+php85-php-xml
+php85-php-ast
+php85-php-phpiredis
+php85-php-pecl-amqp
+php85-php-pecl-apcu
+php85-php-pecl-apfd
+php85-php-pecl-geoip
+php85-php-pecl-http
+php85-php-pecl-igbinary
+php85-php-pecl-imagick
+php85-php-pecl-imap
+php85-php-pecl-lzf
+php85-php-pecl-memcached
+php85-php-pecl-mongodb2
+php85-php-pecl-msgpack
+php85-php-pecl-raphf
+php85-php-pecl-redis6
+php85-php-pecl-rrd
+php85-php-pecl-selinux
+php85-php-pecl-solr2
+php85-php-pecl-ssh2
+php85-php-pecl-uploadprogress
+php85-php-pecl-uuid
+php85-php-pecl-xattr
+php85-php-pecl-zip

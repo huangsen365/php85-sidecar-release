@@ -1,0 +1,30 @@
+# One php-fpm 8.5 container next to the old CentOS 7 container. The old httpd reaches it through
+# ${BIND_IP}:85NN (docker0's address), so nothing outside the host can.
+name: php85-sidecar
+
+services:
+  php85:
+    image: ${IMAGE:?set IMAGE in .env}
+    container_name: ${CONTAINER_NAME:-php85-sidecar}
+    # The default docker0 bridge, like the old container: a compose network would take a new 172.x subnet.
+    network_mode: bridge
+    restart: always
+    ports:
+      # 8500 health/selftest, 8501-8519 the site pools (old 7401-7419).
+      - "${BIND_IP:-172.17.0.1}:8500-8519:8500-8519"
+    volumes:
+      # Same paths as in the old container, so ProxyPassMatch targets and session dirs stay valid.
+      - ${WWW_DIR:?}:/var/www
+      - ${PHP74_LIB_DIR:?}:/var/opt/remi/php74/lib/php
+      - ${POOL_DIR:?}:/etc/opt/remi/php85/php-fpm2.d:ro
+      - ${LOG_DIR:?}:/var/opt/remi/php85/log/php-fpm
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "3"
