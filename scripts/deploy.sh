@@ -4,7 +4,7 @@
 # (an existing one is used as it is and never overwritten); creates the log and pool directories; starts the
 # container; runs tests/smoke.sh; and checks that the old container reaches the sidecar.
 # usage: scripts/deploy.sh <image> [old container]
-#        e.g. scripts/deploy.sh ghcr.io/huangsen365/php85-sidecar:8.5.12-20261115
+#        e.g. scripts/deploy.sh ghcr.io/huangsen365/php85-sidecar:8.5.13-20261122
 # Run it again after changing IMAGE in .env to move to another image (README: 升级镜像).
 # Undo: docker compose down, while no site is switched to 8.5 on this host.
 set -uo pipefail
