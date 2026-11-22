@@ -1,0 +1,255 @@
+# A new release when PHP 8.5 in the package repository is newer than the latest release.
+#
+# Once a day: compare the latest release with the repository the image is built from. When a newer PHP is there,
+# build the image, run tests/e2e.sh on it, and then WAIT: the job "publish" belongs to the environment "release",
+# whose required reviewer is the owner. Nothing is published before that approval. After it: the image goes to
+# ghcr.io, the tag is written into the files that name one, the commit is tagged, and the release gets the offline
+# tarball with its checksum.
+#
+# It runs only in the public repository; in any other copy every job is skipped. A push to a branch ci-test/...
+# builds and tests without publishing: the way to try a change to this file.
+name: release
+
+on:
+  schedule:
+    - cron: '23 4 * * *'
+  workflow_dispatch:
+    inputs:
+      force:
+        description: Build and offer a release although this PHP version is released already
+        type: boolean
+        default: false
+  push:
+    branches: ['ci-test/**']
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  IMAGE: ghcr.io/${{ github.repository_owner }}/php85-sidecar
+
+jobs:
+  check:
+    name: Is a release due?
+    if: github.repository == 'huangsen365/php85-sidecar-release'
+    runs-on: ubuntu-24.04
+    permissions:
+      actions: read
+      contents: read
+      packages: write
+    outputs:
+      due: ${{ steps.versions.outputs.due }}
+      released: ${{ steps.versions.outputs.released }}
+      previous: ${{ steps.versions.outputs.previous }}
+      available: ${{ steps.versions.outputs.available }}
+      security: ${{ steps.versions.outputs.security }}
+    steps:
+      - uses: actions/checkout@v7
+      - name: Released and available versions
+        id: versions
+        env:
+          GH_TOKEN: ${{ github.token }}
+          FORCE: ${{ inputs.force || github.event_name == 'push' }}
+        run: |
+          set -euo pipefail
+          previous=$(gh release view --json tagName --jq .tagName 2>/dev/null || true)
+          released=$(sed -E 's/^v([0-9]+(\.[0-9]+)+)-.*$/\1/' <<<"$previous")
+          available=$(python3 .github/upstream.py)
+          newest=$(printf '%s\n' "$released" "$available" | sort -V | tail -1)
+          due=false
+          if [[ $FORCE == true || -z $released || ( $newest == "$available" && $available != "$released" ) ]]; then
+            due=true
+          fi
+          # Urgency for the release notes; without an answer from php.net the release is simply not called one.
+          security=$(curl -fsS -m 30 "https://www.php.net/releases/index.php?json&version=$available" \
+            | python3 -c 'import json, sys; print("true" if "security" in (json.load(sys.stdin).get("tags") or []) else "false")' \
+            2>/dev/null || echo false)
+          {
+            echo "previous=$previous"; echo "released=$released"; echo "available=$available"
+            echo "due=$due"; echo "security=$security"
+          } >> "$GITHUB_OUTPUT"
+          echo "Released: ${released:-none} (${previous:-no release}). In the package repository: $available." \
+               "Security release: $security. Release due: $due." | tee -a "$GITHUB_STEP_SUMMARY"
+      - name: A release needs the owner's approval
+        if: steps.versions.outputs.due == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          # An environment that is missing is created without any rule, and "publish" would then run unasked.
+          reviewers=$(gh api "repos/$GITHUB_REPOSITORY/environments/release" \
+            --jq '[.protection_rules[]? | select(.type == "required_reviewers") | .reviewers[]?] | length' 2>/dev/null || echo 0)
+          if [[ $reviewers -lt 1 ]]; then
+            echo "::error::The environment 'release' has no required reviewer, so a release would be published without anyone's approval. Add one under Settings > Environments > release."
+            exit 1
+          fi
+          echo "The environment 'release' has $reviewers required reviewer(s)."
+      - name: Can this workflow push the image?
+        if: steps.versions.outputs.due == 'true'
+        env:
+          ACTOR: ${{ github.actor }}
+          TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          # Asks the registry to open an upload and never sends anything: found out now, not after the approval.
+          name=${IMAGE#ghcr.io/}
+          bearer=$(curl -fsS -u "$ACTOR:$TOKEN" "https://ghcr.io/token?service=ghcr.io&scope=repository:$name:pull,push" \
+            | python3 -c 'import json, sys; print(json.load(sys.stdin)["token"])')
+          code=$(curl -s -o /dev/null -w '%{http_code}' -X POST -H "Authorization: Bearer $bearer" \
+            "https://ghcr.io/v2/$name/blobs/uploads/")
+          if [[ $code != 202 ]]; then
+            echo "::error::The registry refuses a push to $IMAGE from this repository (HTTP $code). In the package's settings, under 'Manage Actions access', give this repository the role Write."
+            exit 1
+          fi
+          echo "The registry accepts a push to $IMAGE."
+
+  build:
+    name: Build and test
+    needs: check
+    if: needs.check.outputs.due == 'true'
+    runs-on: ubuntu-24.04
+    outputs:
+      tag: ${{ steps.build.outputs.tag }}
+      checks: ${{ steps.test.outputs.checks }}
+    steps:
+      - uses: actions/checkout@v7
+      - name: Build the image
+        id: build
+        env:
+          REGISTRY_IMAGE: ${{ env.IMAGE }}
+          SOURCE_URL: https://github.com/${{ github.repository }}
+          AVAILABLE: ${{ needs.check.outputs.available }}
+        run: |
+          set -euo pipefail
+          ./build.sh --fresh --save
+          file=$(ls dist/php85-sidecar_*.tar.gz)
+          tag=${file#dist/php85-sidecar_}; tag=${tag%.tar.gz}
+          if [[ ${tag%-*} != "$AVAILABLE" ]]; then
+            echo "::error::The image has PHP ${tag%-*}, the package list said $AVAILABLE."
+            exit 1
+          fi
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "Built $IMAGE:$tag ($(du -h "$file" | cut -f1) as a tarball)." | tee -a "$GITHUB_STEP_SUMMARY"
+      - name: End-to-end test
+        id: test
+        run: |
+          set -o pipefail
+          # As root, like on a build host: the test gives files to the pool user (1000) and a runner may not.
+          sudo tests/e2e.sh | tee e2e.log
+          checks=$(grep -c '^OK ' e2e.log)
+          echo "checks=$checks" >> "$GITHUB_OUTPUT"
+          echo "tests/e2e.sh: $checks checks passed." | tee -a "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: release-${{ steps.build.outputs.tag }}
+          path: |
+            dist/
+            e2e.log
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 30
+
+  publish:
+    name: Publish (after the owner's approval)
+    needs: [check, build]
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    environment: release
+    permissions:
+      contents: write
+      packages: write
+    env:
+      TAG: ${{ needs.build.outputs.tag }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.sha }}
+      - name: Nothing changed since the build
+        run: |
+          set -euo pipefail
+          git fetch -q origin main
+          if [[ $(git rev-parse origin/main) != "$GITHUB_SHA" ]]; then
+            echo "::error::main has moved since this image was built and tested. Run the workflow again."
+            exit 1
+          fi
+          if [[ -n $(git ls-remote --tags origin "refs/tags/v$TAG") ]]; then
+            echo "::error::The tag v$TAG exists already."
+            exit 1
+          fi
+      - uses: actions/download-artifact@v8
+        with:
+          name: release-${{ env.TAG }}
+          path: artifact
+      - name: Load the image that was tested
+        run: |
+          set -euo pipefail
+          (cd artifact/dist && sha256sum -c "php85-sidecar_$TAG.tar.gz.sha256")
+          gunzip -c "artifact/dist/php85-sidecar_$TAG.tar.gz" | docker load
+          docker image inspect "$IMAGE:$TAG" > /dev/null
+      - name: Push the image
+        env:
+          ACTOR: ${{ github.actor }}
+        run: |
+          set -euo pipefail
+          echo "$GH_TOKEN" | docker login ghcr.io -u "$ACTOR" --password-stdin
+          docker push -q "$IMAGE:$TAG"
+          docker logout ghcr.io
+      - name: Write the tag into the tree, commit and tag
+        run: |
+          set -euo pipefail
+          git checkout -q -B main "$GITHUB_SHA"
+          .github/set-version.sh "$TAG"
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git commit -q -am "php85-sidecar $TAG" -m "PHP ${TAG%-*} from the package repository, built and tested by the release workflow. Image: $IMAGE:$TAG"
+          git tag "v$TAG"
+          git push -q origin main "v$TAG"
+      - name: Create the release
+        env:
+          PREVIOUS: ${{ needs.check.outputs.previous }}
+          RELEASED: ${{ needs.check.outputs.released }}
+          SECURITY: ${{ needs.check.outputs.security }}
+          CHECKS: ${{ needs.build.outputs.checks }}
+        run: |
+          set -euo pipefail
+          php=${TAG%-*}
+          file=php85-sidecar_$TAG.tar.gz
+          sum=$(cut -d' ' -f1 "artifact/dist/$file.sha256")
+          {
+            if [[ -n $RELEASED && $RELEASED != "$php" ]]; then
+              echo "PHP $php 的镜像，上一版是 PHP $RELEASED。"
+            else
+              echo "PHP $php 的镜像，用当天软件仓库里的最新软件包重新构建。"
+            fi
+            if [[ $SECURITY == true ]]; then
+              echo "php.net 把 PHP $php 标为安全更新，建议尽快升级。"
+            fi
+            echo
+            echo "## 镜像"
+            echo
+            echo "- 镜像仓库：\`$IMAGE:$TAG\`"
+            echo "- 离线包：下方的 \`$file\` 和 \`.sha256\`，给拉不到 ghcr.io 的服务器用"
+            echo "  - sha256：\`$sum\`"
+            echo "  - 加载：\`sha256sum -c $file.sha256 && gunzip -c $file | docker load\`"
+            echo
+            echo "## 升级"
+            echo
+            echo "已经在用旧镜像的服务器，按 README「升级镜像」操作：一台一台来，先摘掉流量。"
+            if [[ -n $PREVIOUS ]]; then
+              echo
+              echo "脚本和文档相对上一版的变化：https://github.com/$GITHUB_REPOSITORY/compare/$PREVIOUS...v$TAG"
+            fi
+            echo
+            echo "## 测试"
+            echo
+            echo "\`tests/e2e.sh\` 全部 $CHECKS 项通过：在 CentOS 7 的 httpd 2.4.6 老容器上，从预检、部署、切换到回滚和撤销。"
+            echo "本版由仓库的自动构建生成，发布前经仓库所有者确认。"
+          } > notes.md
+          gh release create "v$TAG" --title "php85-sidecar $TAG" --notes-file notes.md \
+            "artifact/dist/$file" "artifact/dist/$file.sha256"
+          echo "Published https://github.com/$GITHUB_REPOSITORY/releases/tag/v$TAG" | tee -a "$GITHUB_STEP_SUMMARY"

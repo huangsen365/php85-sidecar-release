@@ -185,6 +185,8 @@ docker exec -it -u sshuser -w /var/www/<站点> php85-sidecar composer install -
 
 - 发行版的版本号就是镜像标签：`<PHP 版本>-<构建日期>`。每个发行版在 Release 页面写明 PHP 版本和变化。
 - 要拿到 PHP 的安全更新，就升级到新标签的镜像，做法见「升级镜像」。
+- 新发行版是自动构建的：软件仓库里出现新的 PHP 8.5 时，本仓库的工作流（`.github/workflows/release.yml`）会重新构建镜像、
+  跑完 `tests/e2e.sh`，经仓库所有者确认后发布。所以新版本通常在上游发布后一两天内出现。
 - 镜像里的软件来自 AlmaLinux 9、EPEL、Remi 的仓库和 getcomposer.org，各自遵循自己的许可证。
 
 ## 免责声明

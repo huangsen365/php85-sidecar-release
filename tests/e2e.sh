@@ -4,8 +4,9 @@
 # what an operator does, with the same scripts: preflight, deploy, lint, pool, vhost stage/test/apply, switch on,
 # checks, switch off, and the two undo scripts. The sidecar's www pool (8500, memory_limit 128M) plays the old 74NN
 # pool, reached through a forwarder on 127.0.0.1:7401 in the old container. Removes everything it started.
-# usage: tests/e2e.sh [image]      (default: newest php85-sidecar tag)
+# usage: tests/e2e.sh [image]      (default: newest php85-sidecar tag)      Run it as root: it sets file owners.
 set -uo pipefail
+[[ $EUID == 0 ]] || { echo "tests/e2e.sh gives files to the pool user (1000:1000): run it as root, e.g. sudo tests/e2e.sh" >&2; exit 2; }
 export LC_ALL=C
 cd "$(dirname "$0")/.."
 ROOT=$(pwd)
